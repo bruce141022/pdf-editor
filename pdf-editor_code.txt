@@ -1,0 +1,939 @@
+﻿export default {
+  async fetch(request, env, ctx) {
+    const htmlContent = `<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>純前端 PDF 編輯器 (NaN防護穩定版)</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; overflow: hidden; }
+        #app-container { display: flex; flex-direction: column; height: 100vh; }
+        
+        .toolbar { background: white; padding: 10px 20px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid #e5e7eb; box-shadow: 0 1px 3px rgba(0,0,0,0.1); z-index: 10; flex-wrap: wrap; }
+        .btn { padding: 6px 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 4px; }
+        .btn-primary { background: #3b82f6; color: white; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-primary:disabled { background: #9ca3af; cursor: not-allowed; }
+        .btn-success { background: #10b981; color: white; }
+        .btn-success:hover { background: #059669; }
+        .btn-warning { background: #f59e0b; color: white; }
+        .btn-warning:hover { background: #d97706; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        
+        .tool-btn { background: #f3f4f6; border: 1px solid #d1d5db; color: #4b5563; }
+        .tool-btn:hover { background: #e5e7eb; }
+        .tool-btn.active { background: #dbeafe; border-color: #3b82f6; color: #1d4ed8; box-shadow: inset 0 2px 4px rgba(0,0,0,0.05); }
+        .divider { width: 1px; height: 24px; background: #d1d5db; margin: 0 4px; }
+
+
+        .workspace { flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 30px; background: #e5e7eb; position: relative; }
+        #pdf-wrapper { position: relative; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); background: white; margin: 0 auto; transform-origin: top center; }
+        
+        .layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        #pdf-canvas { z-index: 1; }
+        #mask-layer { z-index: 2; }
+        #objects-layer { z-index: 3; }
+        #active-draw-canvas { z-index: 4; } 
+
+
+        body[data-tool="pan"] .workspace { cursor: grab; }
+        body[data-tool="pan"].is-panning .workspace { cursor: grabbing; }
+        body[data-tool="text"] #pdf-wrapper { cursor: text; pointer-events: auto; }
+        body[data-tool="draw"] #pdf-wrapper { cursor: crosshair; }
+
+
+        .editable-text, .img-wrapper, .draw-wrapper { pointer-events: auto; position: absolute; transition: box-shadow 0.2s ease-in-out; }
+
+
+        .selected-obj { border: 2px dashed #3b82f6 !important; box-shadow: 0 0 0 3px rgba(59,130,246,0.3); }
+
+
+        .editable-text {
+            white-space: pre; cursor: text; line-height: 1.2;
+            outline: none; padding: 0 2px; margin-left: -2px; font-family: sans-serif;
+            border-radius: 2px; border: 1px solid transparent; min-width: 20px; min-height: 1em;
+        }
+        body[data-tool="select"] .editable-text { cursor: move; }
+        body[data-tool="select"] .editable-text:not(:focus):hover { border: 1px dashed rgba(59, 130, 246, 0.5); }
+        .new-text { background: rgba(255,255,255,0.9); }
+        .active-override { background: transparent; }
+
+
+        .orig-mask { position: absolute; background-color: #ffffff; pointer-events: none; }
+
+
+        .img-wrapper, .draw-wrapper { cursor: move; border: 1px solid transparent; }
+        body[data-tool="select"] .img-wrapper:hover, body[data-tool="select"] .draw-wrapper:hover { border: 1px dashed #3b82f6; }
+        .img-wrapper img { width: 100%; height: 100%; pointer-events: none; display: block; }
+        .resize-handle {
+            position: absolute; right: -6px; bottom: -6px; width: 14px; height: 14px;
+            background: #3b82f6; border: 2px solid white; border-radius: 50%; cursor: nwse-resize; display: none;
+        }
+        body[data-tool="select"] .selected-obj .resize-handle { display: block; }
+
+
+        #obj-tools { display: flex; gap: 4px; align-items: center; background: #f9fafb; padding: 2px 8px; border-radius: 6px; border: 1px solid #e5e7eb; opacity: 0.3; pointer-events: none; transition: opacity 0.2s; }
+        
+        input[type="color"] { border: none; padding: 0; background: transparent; }
+    </style>
+</head>
+<body data-tool="select">
+    <div id="app-container">
+        <div class="toolbar">
+            <label class="btn btn-primary" title="開啟 PDF 檔案">
+                📂 開啟
+                <input type="file" id="upload" accept="application/pdf" style="display: none;">
+            </label>
+            <div class="divider"></div>
+
+
+            <button id="tool-select" class="btn tool-btn active" title="選取、移動、修改物件">👆 選取</button>
+            <button id="tool-pan" class="btn tool-btn" title="拖曳畫面">✋ 移動</button>
+            <button id="tool-draw" class="btn tool-btn" title="自由畫筆">✍️ 畫筆</button>
+            <button id="tool-text" class="btn tool-btn" title="點擊任意處新增文字">📝 文字</button>
+            <label class="btn tool-btn" title="插入圖片">
+                🖼️ 圖片
+                <input type="file" id="upload-img" accept="image/*" style="display: none;">
+            </label>
+
+
+            <div class="divider"></div>
+
+
+            <div id="obj-tools">
+                <span style="font-size:12px; color:#6b7280; margin-right:4px; user-select:none;">屬性:</span>
+                <button id="btn-layer-up" class="btn tool-btn" title="移至最上層">⏫</button>
+                <button id="btn-layer-down" class="btn tool-btn" title="移至最下層">⏬</button>
+                <div class="divider" style="height: 16px;"></div>
+
+
+                <div id="color-wrapper" style="border: 1px solid #ccc; border-radius: 4px; width: 28px; height: 28px; overflow: hidden; display: flex;">
+                    <input type="color" id="color-picker" value="#000000" title="顏色" style="cursor:pointer; width: 150%; height: 150%; margin: -25%;">
+                </div>
+                <select id="line-width" class="tool-btn" style="padding: 4px; border-radius: 4px; display: none;" title="畫筆粗細">
+                    <option value="2">細</option><option value="5" selected>中</option><option value="10">粗</option>
+                </select>
+
+
+                <div id="text-style-tools" style="display: flex; gap: 4px;">
+                    <select id="font-size-picker" class="tool-btn" style="padding: 4px; border-radius: 4px;" title="文字大小">
+                        <option value="12">12pt</option>
+                        <option value="14">14pt</option>
+                        <option value="16" selected>16pt</option>
+                        <option value="20">20pt</option>
+                        <option value="24">24pt</option>
+                        <option value="32">32pt</option>
+                    </select>
+                    <button id="btn-bold" class="btn tool-btn" style="font-weight: bold;" title="粗體">B</button>
+                    <button id="btn-italic" class="btn tool-btn" style="font-style: italic;" title="斜體">I</button>
+                </div>
+                
+                <div class="divider" style="height: 16px;"></div>
+                <button id="btn-delete" class="btn btn-danger" title="刪除">🗑️</button>
+            </div>
+
+
+            <div style="flex: 1;"></div>
+            
+            <label class="btn btn-warning" title="若匯出失敗或亂碼，請點此上傳電腦中的 .ttf 字體檔">
+                🔤 自訂字體
+                <input type="file" id="upload-font" accept=".ttf,.otf" style="display: none;">
+            </label>
+            <div class="divider"></div>
+
+
+            <button id="btn-zoomout" class="btn tool-btn">🔍-</button>
+            <span id="zoom-info" style="font-size: 13px; font-weight: bold; width: 45px; text-align: center; color:#374151;">150%</span>
+            <button id="btn-zoomin" class="btn tool-btn">🔍+</button>
+            
+            <div class="divider"></div>
+            <button id="btn-prev" class="btn btn-primary" disabled>◀</button>
+            <span id="page-info" style="font-size: 13px; font-weight: bold; color: #555; width: 40px; text-align: center;">0 / 0</span>
+            <button id="btn-next" class="btn btn-primary" disabled>▶</button>
+            
+            <div class="divider"></div>
+            <button id="btn-export" class="btn btn-success" style="display:none;">💾 儲存下載</button>
+        </div>
+
+
+        <div class="workspace" id="workspace">
+            <h2 id="empty-msg" style="color: #9ca3af; margin-top: 20vh;">正在載入核心模組...</h2>
+            <div id="pdf-wrapper" style="display:none;">
+                <canvas id="pdf-canvas" class="layer"></canvas>
+                <div id="mask-layer" class="layer"></div> 
+                <div id="objects-layer" class="layer"></div>
+                <canvas id="active-draw-canvas" class="layer"></canvas> 
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        const PDF_JS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        const PDF_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        const PDF_LIB_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js';
+        const FONTKIT_URL = 'https://unpkg.com/@pdf-lib/fontkit/dist/fontkit.umd.min.js';
+
+
+        let zIndexCounter = 20;
+
+
+        const state = {
+            rawBuffer: null, pdfDoc: null, customFontBuffer: null,
+            currentPage: 1, totalPages: 0, scale: 1.5,
+            tool: 'select', selectedEl: null, pageData: {}
+        };
+
+
+        // ★ 核心修復：安全數值轉換函數，防止 NaN 引發崩潰
+        function safeNum(val, fallback = 0) {
+            const n = parseFloat(val);
+            return isNaN(n) ? fallback : n;
+        }
+
+
+        function initPageData(numPages) {
+            state.pageData = {};
+            for (let i = 1; i <= numPages; i++) {
+                state.pageData[i] = { textOverrides: {}, newTexts: [], drawings: [], images: [] };
+            }
+        }
+
+
+        window.onload = async () => {
+            const loadScript = src => new Promise((r, j) => { const s = document.createElement('script'); s.src=src; s.onload=r; s.onerror=j; document.head.appendChild(s); });
+            try {
+                await loadScript(PDF_JS_URL); 
+                await loadScript(PDF_LIB_URL);
+                await loadScript(FONTKIT_URL); 
+                window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+                document.getElementById('empty-msg').innerText = '載入完成，請點擊左上角「📂 開啟」檔案';
+                setupUI(); setupInteractions();
+            } catch (e) { document.getElementById('empty-msg').innerText = '載入失敗，請檢查網路。'; }
+        };
+
+
+        const rgbToHex = (colorStr) => {
+            if (!colorStr) return '#000000';
+            if (colorStr.startsWith('#')) return colorStr.substring(0, 7); 
+            const match = colorStr.match(/^rgba?[\\s+]?\\([\\s+]?(\\d+)[\\s+]?,[\\s+]?(\\d+)[\\s+]?,[\\s+]?(\\d+)/i);
+            if (match && match.length >= 4) {
+                return "#" + ("0" + parseInt(match[1], 10).toString(16)).slice(-2) +
+                             ("0" + parseInt(match[2], 10).toString(16)).slice(-2) +
+                             ("0" + parseInt(match[3], 10).toString(16)).slice(-2);
+            }
+            return '#000000';
+        };
+
+
+        function flashElement(el) {
+            if(!el) return;
+            el.style.boxShadow = '0 0 20px 8px rgba(16, 185, 129, 0.8)'; 
+            setTimeout(() => {
+                if(el.classList.contains('selected-obj')) el.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.3)';
+                else el.style.boxShadow = 'none';
+            }, 400);
+        }
+
+
+        function setupUI() {
+            ['select', 'pan', 'draw', 'text'].forEach(t => {
+                document.getElementById('tool-' + t).onclick = (e) => {
+                    state.tool = t; document.body.setAttribute('data-tool', t);
+                    document.querySelectorAll('.toolbar > .tool-btn').forEach(b => b.classList.remove('active'));
+                    e.target.classList.add('active');
+                    if(t !== 'select') clearSelection();
+                };
+            });
+
+
+            document.getElementById('upload').onchange = e => {
+                const f = e.target.files[0]; if(!f) return;
+                const r = new FileReader();
+                r.onload = async evt => {
+                    state.rawBuffer = evt.target.result.slice(0); 
+                    const pdfBytesForJS = new Uint8Array(state.rawBuffer.slice(0));
+                    state.pdfDoc = await pdfjsLib.getDocument({ data: pdfBytesForJS }).promise;
+                    state.totalPages = state.pdfDoc.numPages; state.currentPage = 1;
+                    initPageData(state.totalPages);
+                    
+                    document.getElementById('empty-msg').style.display = 'none';
+                    document.getElementById('pdf-wrapper').style.display = 'block';
+                    document.getElementById('btn-export').style.display = 'block';
+                    renderPage(state.currentPage);
+                }; r.readAsArrayBuffer(f);
+            };
+
+
+            document.getElementById('upload-font').onchange = e => {
+                const f = e.target.files[0]; if(!f) return;
+                const r = new FileReader();
+                r.onload = evt => {
+                    state.customFontBuffer = evt.target.result;
+                    alert("✅ 字體載入成功！現在匯出將不會出現亂碼或失敗錯誤。");
+                }; r.readAsArrayBuffer(f);
+            };
+
+
+            document.getElementById('btn-prev').onclick = () => { if (state.currentPage > 1) renderPage(--state.currentPage); };
+            document.getElementById('btn-next').onclick = () => { if (state.currentPage < state.totalPages) renderPage(++state.currentPage); };
+            document.getElementById('btn-zoomin').onclick = () => { if (state.scale < 3.0) { state.scale += 0.25; renderPage(state.currentPage); } };
+            document.getElementById('btn-zoomout').onclick = () => { if (state.scale > 0.5) { state.scale -= 0.25; renderPage(state.currentPage); } };
+            document.getElementById('btn-export').onclick = exportModifiedPDF;
+
+
+            document.getElementById('upload-img').onchange = function(e) {
+                const f = e.target.files[0]; if(!f) return;
+                const r = new FileReader();
+                r.onload = evt => {
+                    const img = new Image(); img.src = evt.target.result;
+                    img.onload = () => {
+                        state.pageData[state.currentPage].images.push({
+                            id: Date.now().toString(), src: evt.target.result, type: f.type,
+                            x: 50, y: 50, w: 150, h: safeNum(150 * (img.height / img.width), 150),
+                            zIndex: ++zIndexCounter 
+                        });
+                        document.getElementById('tool-select').click();
+                        renderPage(state.currentPage);
+                    };
+                }; r.readAsDataURL(f); this.value = '';
+            };
+
+
+            document.getElementById('btn-layer-up').onclick = () => {
+                if (state.selectedEl) {
+                    state.selectedEl.style.zIndex = ++zIndexCounter; 
+                    saveObjState(state.selectedEl);
+                    flashElement(state.selectedEl);
+                }
+            };
+            document.getElementById('btn-layer-down').onclick = () => {
+                if (state.selectedEl) {
+                    let minZ = 99999;
+                    const children = document.getElementById('objects-layer').children;
+                    for (let i = 0; i < children.length; i++) {
+                        const z = parseInt(children[i].style.zIndex);
+                        if (!isNaN(z) && z < minZ) minZ = z;
+                    }
+                    if(minZ === 99999) minZ = 10;
+                    state.selectedEl.style.zIndex = minZ - 1; 
+                    saveObjState(state.selectedEl);
+                    flashElement(state.selectedEl);
+                }
+            };
+
+
+            document.getElementById('btn-bold').onclick = () => applyTextStyle('fontWeight', 'bold', 'normal', 'btn-bold');
+            document.getElementById('btn-italic').onclick = () => applyTextStyle('fontStyle', 'italic', 'normal', 'btn-italic');
+            
+            document.getElementById('font-size-picker').onchange = (e) => {
+                if (!state.selectedEl || !state.selectedEl.classList.contains('editable-text')) return;
+                state.selectedEl.style.fontSize = (e.target.value * state.scale) + 'px';
+                saveObjState(state.selectedEl);
+            };
+
+
+            document.getElementById('color-picker').oninput = (e) => {
+                if (!state.selectedEl) return;
+                if (state.selectedEl.classList.contains('editable-text')) {
+                    state.selectedEl.style.color = e.target.value;
+                } else if (state.selectedEl.classList.contains('draw-wrapper')) {
+                    const svgPath = state.selectedEl.querySelector('path');
+                    if (svgPath) svgPath.setAttribute('stroke', e.target.value);
+                }
+                saveObjState(state.selectedEl);
+            };
+            
+            document.getElementById('btn-delete').onclick = () => {
+                if (!state.selectedEl) return;
+                const el = state.selectedEl;
+                const ps = state.pageData[state.currentPage];
+                
+                if (el.classList.contains('img-wrapper')) {
+                    ps.images = ps.images.filter(i => i.id !== el.dataset.id);
+                } else if (el.classList.contains('new-text')) {
+                    ps.newTexts = ps.newTexts.filter(t => t.id !== el.dataset.id);
+                } else if (el.classList.contains('draw-wrapper')) {
+                    ps.drawings = ps.drawings.filter(d => d.id !== el.dataset.id);
+                } else if (el.classList.contains('active-override')) {
+                    ps.textOverrides[el.dataset.index].deleted = true;
+                    renderPage(state.currentPage);
+                }
+                el.remove();
+                clearSelection();
+            };
+        }
+
+
+        function applyTextStyle(styleProp, activeValue, inactiveValue, btnId) {
+            if (!state.selectedEl || !state.selectedEl.classList.contains('editable-text')) return;
+            const el = state.selectedEl;
+            const isActive = el.style[styleProp] === activeValue;
+            el.style[styleProp] = isActive ? inactiveValue : activeValue;
+            if (btnId) document.getElementById(btnId).classList.toggle('active', !isActive);
+            saveObjState(el);
+        }
+
+
+        // --- 互動與拖曳引擎 ---
+        function setupInteractions() {
+            const wrapper = document.getElementById('pdf-wrapper');
+            const activeDrawCanvas = document.getElementById('active-draw-canvas');
+            const objectsLayer = document.getElementById('objects-layer');
+            let isDragging = false, isResizing = false, draggedEl = null;
+            let startX, startY, origX, origY, origW, origH;
+            let isDrawing = false, currentPath = [];
+
+
+            wrapper.addEventListener('mousedown', e => {
+                const rect = wrapper.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+
+                if (state.tool === 'text') {
+                    if (e.target.closest('.editable-text')) return; 
+                    const newObj = {
+                        id: Date.now().toString(),
+                        x: mouseX / state.scale, y: (mouseY - 10) / state.scale,
+                        text: '', color: document.getElementById('color-picker').value,
+                        fontSize: 16, bold: false, italic: false, w: 20, h: 20,
+                        zIndex: ++zIndexCounter
+                    };
+                    state.pageData[state.currentPage].newTexts.push(newObj);
+                    const div = createTextDom(newObj, false);
+                    objectsLayer.appendChild(div);
+                    document.getElementById('tool-select').click();
+                    selectObject(div);
+                    div.contentEditable = 'true';
+                    setTimeout(() => { div.focus(); }, 50);
+                    return;
+                }
+
+
+                if (state.tool === 'pan') {
+                    document.body.classList.add('is-panning');
+                    startX = e.clientX; startY = e.clientY;
+                    origX = document.getElementById('workspace').scrollLeft; origY = document.getElementById('workspace').scrollTop;
+                    isDragging = true;
+                    return;
+                }
+
+
+                if (state.tool === 'draw') {
+                    isDrawing = true;
+                    currentPath = [{ x: mouseX / state.scale, y: mouseY / state.scale }];
+                    const ctx = activeDrawCanvas.getContext('2d');
+                    ctx.beginPath(); 
+                    ctx.moveTo(mouseX, mouseY);
+                    return;
+                }
+
+
+                if (state.tool === 'select') {
+                    const target = e.target.closest('.editable-text, .img-wrapper, .draw-wrapper');
+                    const handle = e.target.closest('.resize-handle');
+                    
+                    if (handle) {
+                        isResizing = true; draggedEl = handle.parentElement;
+                        startX = e.clientX; origW = safeNum(draggedEl.style.width); origH = safeNum(draggedEl.style.height);
+                        e.stopPropagation();
+                    } else if (target) {
+                        if (target.classList.contains('editable-text') && document.activeElement === target) {
+                            isDragging = false;
+                            return; 
+                        }
+
+
+                        selectObject(target);
+                        draggedEl = target; isDragging = true;
+                        startX = e.clientX; startY = e.clientY;
+                        origX = safeNum(target.style.left); origY = safeNum(target.style.top);
+                        
+                        if (target.classList.contains('editable-text') && target.dataset.active !== 'true') {
+                            const idx = target.dataset.index;
+                            target.dataset.active = 'true';
+                            state.pageData[state.currentPage].textOverrides[idx] = {
+                                text: target.innerText, deleted: false,
+                                color: document.getElementById('color-picker').value || '#000000',
+                                x: safeNum(target.dataset.origX), y: safeNum(target.dataset.origY),
+                                w: safeNum(target.dataset.origW, 20), h: safeNum(target.dataset.origH, 20),
+                                origX: safeNum(target.dataset.origX), origY: safeNum(target.dataset.origY),
+                                origW: safeNum(target.dataset.origW, 20), origH: safeNum(target.dataset.origH, 20),
+                                bold: false, italic: false,
+                                fontSize: safeNum(target.style.fontSize) / state.scale || 16,
+                                zIndex: ++zIndexCounter
+                            };
+                            
+                            renderPage(state.currentPage).then(() => {
+                                const newEl = document.querySelector(\`[data-index="\${idx}"]\`);
+                                if(newEl) { 
+                                    selectObject(newEl); 
+                                    newEl.contentEditable = 'true';
+                                    newEl.focus(); 
+                                }
+                            });
+                            isDragging = false; 
+                        } else {
+                            if (target.classList.contains('editable-text')) target.contentEditable = 'true';
+                        }
+                    } else {
+                        clearSelection();
+                    }
+                }
+            });
+
+
+            window.addEventListener('mousemove', e => {
+                if (state.tool === 'pan' && isDragging) {
+                    const ws = document.getElementById('workspace');
+                    ws.scrollLeft = origX - (e.clientX - startX);
+                    ws.scrollTop = origY - (e.clientY - startY);
+                }
+                
+                if (state.tool === 'draw' && isDrawing) {
+                    const rect = wrapper.getBoundingClientRect();
+                    const mouseX = e.clientX - rect.left;
+                    const mouseY = e.clientY - rect.top;
+                    currentPath.push({ x: mouseX / state.scale, y: mouseY / state.scale });
+                    
+                    const ctx = activeDrawCanvas.getContext('2d');
+                    ctx.lineTo(mouseX, mouseY);
+                    ctx.strokeStyle = document.getElementById('color-picker').value;
+                    ctx.lineWidth = parseInt(document.getElementById('line-width').value) * state.scale;
+                    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+                    ctx.stroke();
+                }
+
+
+                if (draggedEl && state.tool === 'select') {
+                    if (isDragging) {
+                        draggedEl.style.left = (origX + (e.clientX - startX)) + 'px';
+                        draggedEl.style.top = (origY + (e.clientY - startY)) + 'px';
+                    } else if (isResizing) {
+                        const dx = e.clientX - startX;
+                        const ratio = origW === 0 ? 1 : (origH / origW);
+                        draggedEl.style.width = (origW + dx) + 'px';
+                        draggedEl.style.height = ((origW + dx) * ratio) + 'px';
+                    }
+                }
+            });
+
+
+            window.addEventListener('mouseup', () => {
+                document.body.classList.remove('is-panning');
+                if (draggedEl && (isDragging || isResizing)) saveObjState(draggedEl); 
+                draggedEl = null; isDragging = false; isResizing = false;
+
+
+                if (isDrawing && currentPath.length > 1) {
+                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                    currentPath.forEach(p => {
+                        if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y;
+                        if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y;
+                    });
+                    const lw = parseInt(document.getElementById('line-width').value);
+                    minX -= lw; minY -= lw; maxX += lw; maxY += lw;
+
+
+                    const relPath = currentPath.map(p => ({ x: p.x - minX, y: p.y - minY }));
+
+
+                    state.pageData[state.currentPage].drawings.push({
+                        id: Date.now().toString(),
+                        path: relPath, color: document.getElementById('color-picker').value, width: lw,
+                        x: minX, y: minY, w: maxX - minX, h: maxY - minY,
+                        zIndex: ++zIndexCounter
+                    });
+                    
+                    activeDrawCanvas.getContext('2d').clearRect(0, 0, activeDrawCanvas.width, activeDrawCanvas.height);
+                    renderPage(state.currentPage);
+                }
+                isDrawing = false;
+            });
+
+
+            wrapper.addEventListener('input', e => { if (e.target.classList.contains('editable-text')) saveObjState(e.target); });
+            wrapper.addEventListener('blur', e => {
+                if (e.target.classList.contains('editable-text')) {
+                    e.target.contentEditable = 'false'; 
+                    if (e.target.innerText.trim() === '' && e.target.classList.contains('new-text')) {
+                        const ps = state.pageData[state.currentPage];
+                        if (ps) ps.newTexts = ps.newTexts.filter(t => t.id !== e.target.dataset.id);
+                        e.target.remove();
+                        if (state.selectedEl === e.target) clearSelection();
+                    } else { saveObjState(e.target); }
+                }
+            }, true);
+        }
+
+
+        // --- 物件狀態管理 (全面套用 safeNum) ---
+        function selectObject(el) {
+            clearSelection();
+            if (!el) return;
+            state.selectedEl = el;
+            el.classList.add('selected-obj');
+            
+            const objTools = document.getElementById('obj-tools');
+            objTools.style.opacity = '1';
+            objTools.style.pointerEvents = 'auto';
+            
+            const textTools = document.getElementById('text-style-tools');
+            const lineWidthTool = document.getElementById('line-width');
+            const colorWrapper = document.getElementById('color-wrapper');
+            const colorPicker = document.getElementById('color-picker');
+            const fontSizePicker = document.getElementById('font-size-picker');
+            
+            if (el.classList.contains('editable-text')) {
+                textTools.style.display = 'flex'; lineWidthTool.style.display = 'none';
+                colorWrapper.style.display = 'flex';
+                colorPicker.value = rgbToHex(el.style.color);
+                
+                const currentSize = Math.round(safeNum(el.style.fontSize) / state.scale) || 16;
+                fontSizePicker.value = currentSize;
+                
+                document.getElementById('btn-bold').classList.toggle('active', el.style.fontWeight === 'bold');
+                document.getElementById('btn-italic').classList.toggle('active', el.style.fontStyle === 'italic');
+            } else if (el.classList.contains('draw-wrapper')) {
+                textTools.style.display = 'none'; lineWidthTool.style.display = 'block';
+                colorWrapper.style.display = 'flex';
+                const p = el.querySelector('path');
+                if (p) colorPicker.value = rgbToHex(p.getAttribute('stroke'));
+            } else {
+                textTools.style.display = 'none'; lineWidthTool.style.display = 'none'; colorWrapper.style.display = 'none';
+            }
+        }
+        
+        function clearSelection() {
+            if (state.selectedEl) state.selectedEl.classList.remove('selected-obj');
+            state.selectedEl = null;
+            
+            const objTools = document.getElementById('obj-tools');
+            objTools.style.opacity = '0.3';
+            objTools.style.pointerEvents = 'none';
+        }
+
+
+        function saveObjState(el) {
+            const ps = state.pageData[state.currentPage];
+            const z = parseInt(el.style.zIndex) || 10;
+            
+            if (el.classList.contains('img-wrapper')) {
+                const img = ps.images.find(i => i.id === el.dataset.id);
+                if (img) {
+                    img.x = safeNum(el.style.left) / state.scale; img.y = safeNum(el.style.top) / state.scale;
+                    img.w = safeNum(el.style.width) / state.scale; img.h = safeNum(el.style.height) / state.scale;
+                    img.zIndex = z;
+                }
+            } else if (el.classList.contains('draw-wrapper')) {
+                const drw = ps.drawings.find(d => d.id === el.dataset.id);
+                if (drw) {
+                    drw.x = safeNum(el.style.left) / state.scale; drw.y = safeNum(el.style.top) / state.scale;
+                    const p = el.querySelector('path'); if (p) drw.color = p.getAttribute('stroke');
+                    drw.zIndex = z;
+                }
+            } else if (el.classList.contains('editable-text')) {
+                const data = {
+                    text: el.innerText, color: el.style.color,
+                    x: safeNum(el.style.left) / state.scale, y: safeNum(el.style.top) / state.scale,
+                    w: safeNum(el.offsetWidth) / state.scale, h: safeNum(el.offsetHeight) / state.scale,
+                    bold: el.style.fontWeight === 'bold', italic: el.style.fontStyle === 'italic',
+                    fontSize: safeNum(el.style.fontSize) / state.scale, zIndex: z
+                };
+                if (el.classList.contains('active-override')) {
+                    ps.textOverrides[el.dataset.index] = { ...ps.textOverrides[el.dataset.index], ...data };
+                } else if (el.classList.contains('new-text')) {
+                    const nt = ps.newTexts.find(t => t.id === el.dataset.id);
+                    if (nt) Object.assign(nt, data);
+                }
+            }
+        }
+
+
+        function createTextDom(data, isOverride) {
+            const div = document.createElement('div');
+            div.className = 'editable-text ' + (isOverride ? 'active-override' : 'new-text');
+            div.style.left = (safeNum(data.x) * state.scale) + 'px'; div.style.top = (safeNum(data.y) * state.scale) + 'px';
+            div.style.fontSize = (safeNum(data.fontSize, 16) * state.scale) + 'px'; div.style.color = data.color;
+            div.style.fontWeight = data.bold ? 'bold' : 'normal'; div.style.fontStyle = data.italic ? 'italic' : 'normal';
+            div.style.zIndex = data.zIndex || 10;
+            div.innerText = data.text; div.contentEditable = 'false';
+
+
+            if (isOverride) {
+                div.dataset.index = data.index; div.dataset.active = 'true';
+                div.dataset.origX = data.origX; div.dataset.origY = data.origY;
+                div.dataset.origW = data.origW; div.dataset.origH = data.origH;
+            } else { div.dataset.id = data.id; }
+            return div;
+        }
+
+
+        function createDrawDom(d) {
+            const wDiv = document.createElement('div');
+            wDiv.className = 'draw-wrapper'; wDiv.dataset.id = d.id;
+            wDiv.style.left = (safeNum(d.x) * state.scale) + 'px'; wDiv.style.top = (safeNum(d.y) * state.scale) + 'px';
+            wDiv.style.width = (safeNum(d.w) * state.scale) + 'px'; wDiv.style.height = (safeNum(d.h) * state.scale) + 'px';
+            wDiv.style.zIndex = d.zIndex || 10;
+
+
+            let dPath = \`M \${safeNum(d.path[0].x) * state.scale} \${safeNum(d.path[0].y) * state.scale}\`;
+            for (let i = 1; i < d.path.length; i++) dPath += \` L \${safeNum(d.path[i].x) * state.scale} \${safeNum(d.path[i].y) * state.scale}\`;
+
+
+            wDiv.innerHTML = \`<svg width="100%" height="100%" style="overflow:visible;"><path d="\${dPath}" stroke="\${d.color}" stroke-width="\${safeNum(d.width) * state.scale}" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>\`;
+            return wDiv;
+        }
+
+
+        // --- 核心渲染引擎 ---
+        async function renderPage(pageNum) {
+            clearSelection();
+            const page = await state.pdfDoc.getPage(pageNum);
+            const viewport = page.getViewport({ scale: state.scale });
+            
+            const wrapper = document.getElementById('pdf-wrapper');
+            const canvas = document.getElementById('pdf-canvas');
+            const activeDrawCanvas = document.getElementById('active-draw-canvas');
+            const maskLayer = document.getElementById('mask-layer');
+            const objectsLayer = document.getElementById('objects-layer');
+            
+            document.getElementById('page-info').innerText = pageNum + ' / ' + state.totalPages;
+            document.getElementById('zoom-info').innerText = Math.round(state.scale * 100) + '%';
+            document.getElementById('btn-prev').disabled = pageNum <= 1; document.getElementById('btn-next').disabled = pageNum >= state.totalPages;
+
+
+            const w = viewport.width + 'px', h = viewport.height + 'px';
+            wrapper.style.width = w; wrapper.style.height = h;
+            maskLayer.style.width = w; maskLayer.style.height = h;
+            objectsLayer.style.width = w; objectsLayer.style.height = h;
+            
+            const dpr = window.devicePixelRatio || 1;
+            [canvas, activeDrawCanvas].forEach(cvs => {
+                cvs.width = Math.floor(viewport.width * dpr); cvs.height = Math.floor(viewport.height * dpr);
+                cvs.style.width = w; cvs.style.height = h;
+            });
+            const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+            activeDrawCanvas.getContext('2d').scale(dpr, dpr);
+            
+            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+
+            maskLayer.innerHTML = ''; objectsLayer.innerHTML = '';
+            const ps = state.pageData[pageNum];
+
+
+            ps.drawings.forEach(d => { objectsLayer.appendChild(createDrawDom(d)); });
+
+
+            ps.images.forEach(imgData => {
+                const wDiv = document.createElement('div'); wDiv.className = 'img-wrapper'; wDiv.dataset.id = imgData.id;
+                wDiv.style.left = (safeNum(imgData.x) * state.scale) + 'px'; wDiv.style.top = (safeNum(imgData.y) * state.scale) + 'px';
+                wDiv.style.width = (safeNum(imgData.w) * state.scale) + 'px'; wDiv.style.height = (safeNum(imgData.h) * state.scale) + 'px';
+                wDiv.style.zIndex = imgData.zIndex || 10;
+                const img = document.createElement('img'); img.src = imgData.src; wDiv.appendChild(img);
+                const handle = document.createElement('div'); handle.className = 'resize-handle'; wDiv.appendChild(handle);
+                objectsLayer.appendChild(wDiv);
+            });
+
+
+            const textContent = await page.getTextContent();
+            const unscaledViewport = page.getViewport({ scale: 1.0 });
+            
+            textContent.items.forEach((item, index) => {
+                if (!item.str || item.str.trim() === '') return;
+                const tx = item.transform, fontHeight = Math.abs(tx[3]);
+                const pt = unscaledViewport.convertToViewportPoint(tx[4], tx[5]);
+                const baseX = pt[0], baseY = pt[1] - fontHeight;
+
+
+                const override = ps.textOverrides[index];
+                if (override) {
+                    const mask = document.createElement('div'); mask.className = 'orig-mask';
+                    mask.style.left = (safeNum(override.origX) * state.scale) + 'px'; mask.style.top = (safeNum(override.origY) * state.scale) + 'px';
+                    mask.style.width = (safeNum(override.origW, 10) * state.scale) + 'px'; mask.style.height = (safeNum(override.origH, 10) * state.scale) + 'px';
+                    maskLayer.appendChild(mask);
+
+
+                    if (!override.deleted) {
+                        override.index = index; 
+                        objectsLayer.appendChild(createTextDom(override, true));
+                    }
+                } else {
+                    const div = document.createElement('div');
+                    div.className = 'editable-text'; div.innerText = item.str; div.dataset.origText = item.str;
+                    div.style.left = (baseX * state.scale) + 'px'; div.style.top = (baseY * state.scale) + 'px';
+                    div.style.fontSize = (fontHeight * state.scale) + 'px'; div.style.height = (fontHeight * 1.2 * state.scale) + 'px';
+                    div.style.color = 'transparent'; div.style.zIndex = 5; 
+                    div.dataset.index = index; div.dataset.active = 'false';
+                    div.dataset.origX = baseX; div.dataset.origY = baseY;
+                    // ★ 嚴格防護初始寬度，避免產生 NaN
+                    div.dataset.origW = item.width ? (item.width * 1.1) : (fontHeight * item.str.length); 
+                    div.dataset.origH = fontHeight * 1.2;
+                    objectsLayer.appendChild(div);
+                }
+            });
+
+
+            ps.newTexts.forEach(nt => objectsLayer.appendChild(createTextDom(nt, false)));
+        }
+
+
+        async function safeFetchFont() {
+            const urls = [
+                'https://cdn.jsdelivr.net/npm/noto-sans-tc@1.0.0/fonts/NotoSansTC-Regular.otf',
+                'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC-Regular.ttf'
+            ];
+            for (let url of urls) {
+                try {
+                    const res = await fetch(url);
+                    if (res.ok) return await res.arrayBuffer();
+                } catch (e) { console.warn("節點失敗", url); }
+            }
+            throw new Error("無法連線至字體伺服器");
+        }
+
+
+        const b64ToUint8 = b64 => {
+            const bin = atob(b64); const len = bin.length; const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+            return bytes;
+        };
+
+
+        // --- PDF 匯出合成引擎 (NaN 強制過濾防護) ---
+        async function exportModifiedPDF() {
+            clearSelection();
+            const btn = document.getElementById('btn-export'); 
+            btn.disabled = true;
+
+
+            try {
+                if (document.activeElement && document.activeElement.classList.contains('editable-text')) document.activeElement.blur();
+
+
+                const pristineBytes = new Uint8Array(state.rawBuffer.slice(0));
+                const { PDFDocument, rgb } = window.PDFLib;
+                const pdfDocModified = await PDFDocument.load(pristineBytes);
+                pdfDocModified.registerFontkit(window.fontkit);
+
+
+                let targetFont;
+                if (state.customFontBuffer) {
+                    btn.innerText = '載入自訂字體中...';
+                    targetFont = await pdfDocModified.embedFont(state.customFontBuffer);
+                } else {
+                    try {
+                        btn.innerText = '下載雲端字體中...';
+                        const fontBytes = await safeFetchFont();
+                        targetFont = await pdfDocModified.embedFont(fontBytes);
+                    } catch (fontErr) {
+                        alert("⚠️ 雲端字體下載失敗！可能被廣告阻擋器或網路防護封鎖。\\n\\n為了避免亂碼與崩潰，請點擊上方工具列的「🔤 自訂字體」按鈕，手動上傳您電腦內的任何 .ttf 字體檔後，再試一次！");
+                        btn.innerText = '💾 儲存下載';
+                        btn.disabled = false;
+                        return; 
+                    }
+                }
+
+
+                btn.innerText = '合成圖層中...';
+                const pages = pdfDocModified.getPages();
+                const cParse = (cString) => {
+                    const m = cString.match(/\\d+/g);
+                    return m && m.length >= 3 ? rgb(parseInt(m[0])/255, parseInt(m[1])/255, parseInt(m[2])/255) : rgb(0,0,0);
+                };
+
+
+                for (let i = 1; i <= state.totalPages; i++) {
+                    const ps = state.pageData[i]; const page = pages[i - 1];
+                    const originalPage = await state.pdfDoc.getPage(i);
+                    const vp = originalPage.getViewport({ scale: 1.0 });
+
+
+                    // 1. 先畫遮罩 (立可白)，套用 NaN 過濾
+                    for (const item of Object.values(ps.textOverrides)) {
+                        const oX = safeNum(item.origX);
+                        const oY = safeNum(item.origY);
+                        const oW = safeNum(item.origW, 10);
+                        const oH = safeNum(item.origH, 10);
+                        
+                        const ptTopOrig = vp.convertToPdfPoint(oX, oY);
+                        const ptBotOrig = vp.convertToPdfPoint(oX, oY + oH);
+                        page.drawRectangle({ x: ptTopOrig[0], y: Math.min(ptTopOrig[1], ptBotOrig[1]), width: oW + 2, height: oH, color: rgb(1,1,1) });
+                    }
+
+
+                    let allObjects = [];
+                    Object.values(ps.textOverrides).forEach(o => { if(!o.deleted && o.text.trim()!=='') allObjects.push({...o, type: 'text'}); });
+                    ps.newTexts.forEach(o => { if(o.text.trim()!=='') allObjects.push({...o, type: 'text'}); });
+                    ps.images.forEach(o => allObjects.push({...o, type: 'image'}));
+                    ps.drawings.forEach(o => allObjects.push({...o, type: 'draw'}));
+                    
+                    allObjects.sort((a, b) => (a.zIndex || 10) - (b.zIndex || 10));
+
+
+                    // 3. 依照圖層順序繪製到 PDF (套用 NaN 過濾)
+                    for (const obj of allObjects) {
+                        const ox = safeNum(obj.x);
+                        const oy = safeNum(obj.y);
+                        const ow = safeNum(obj.w, 10);
+                        const oh = safeNum(obj.h, 10);
+
+
+                        if (obj.type === 'text') {
+                            const ptTop = vp.convertToPdfPoint(ox, oy); const ptBot = vp.convertToPdfPoint(ox, oy + oh);
+                            page.drawText(obj.text, { x: ptTop[0], y: Math.min(ptTop[1], ptBot[1]) + 2, size: safeNum(obj.fontSize, 16), font: targetFont, color: cParse(obj.color) });
+                        } 
+                        else if (obj.type === 'draw') {
+                            const col = cParse(obj.color);
+                            const w = safeNum(obj.width, 2);
+                            for (let k = 1; k < obj.path.length; k++) {
+                                const px1 = ox + safeNum(obj.path[k-1].x); const py1 = oy + safeNum(obj.path[k-1].y); 
+                                const px2 = ox + safeNum(obj.path[k].x);   const py2 = oy + safeNum(obj.path[k].y);
+                                const p1 = vp.convertToPdfPoint(px1, py1); 
+                                const p2 = vp.convertToPdfPoint(px2, py2);
+                                page.drawLine({ start: {x:p1[0],y:p1[1]}, end: {x:p2[0],y:p2[1]}, thickness: w, color: col });
+                            }
+                        }
+                        else if (obj.type === 'image') {
+                            const imgBytes = b64ToUint8(obj.src.split(',')[1]);
+                            const pdfImage = (obj.type === 'image/jpeg' || obj.src.startsWith('data:image/jpeg')) ? await pdfDocModified.embedJpg(imgBytes) : await pdfDocModified.embedPng(imgBytes);
+                            const ptTop = vp.convertToPdfPoint(ox, oy); const ptBot = vp.convertToPdfPoint(ox, oy + oh);
+                            page.drawImage(pdfImage, { x: ptTop[0], y: Math.min(ptTop[1], ptBot[1]), width: ow, height: oh });
+                        }
+                    }
+                }
+
+
+                const modifiedBytes = await pdfDocModified.save();
+                const blob = new Blob([modifiedBytes], { type: "application/pdf" });
+                const link = document.createElement('a'); link.href = URL.createObjectURL(blob);
+                link.download = "Edited_Document.pdf"; link.click();
+
+
+            } catch (error) { 
+                console.error(error); 
+                if(error.message.includes("WinAnsi") || error.message.includes("encode")) {
+                    alert("匯出失敗！發現無法辨識的中文字元。請點擊上方「🔤 自訂字體」上傳一個中文字體檔 (.ttf) 後再試一次！");
+                } else {
+                    alert("系統處理錯誤：" + error.message); 
+                }
+            } 
+            finally { btn.innerText = '💾 儲存下載'; btn.disabled = false; }
+        }
+    </script>
+</body>
+</html>`;
+
+
+    return new Response(htmlContent, {
+      headers: {
+        "content-type": "text/html;charset=UTF-8",
+      },
+    });
+  }
+};
